@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Baymax AR Filter</title>
+    <!-- Tailwind CSS for UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MediaPipe Face Mesh -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden; /* Prevent scrolling */
+        }
+        
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+
+        canvas {
+            max-width: 100%;
+            max-height: 100%;
+            transform: scaleX(-1); /* Mirror effect */
+        }
+
+        /* Hidden video element required for MediaPipe */
+        #input-video {
+            display: none;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 50;
+            transition: opacity 0.5s;
+        }
+
+        .baymax-loader {
+            width: 100px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: relative;
+        }
+
+        .eye {
+            width: 15px;
+            height: 15px;
+            background: white;
+            border-radius: 50%;
+            animation: blink 3s infinite;
+        }
+
+        .line {
+            height: 4px;
+            flex-grow: 1;
+            background: white;
+            margin: 0 5px;
+        }
+
+        @keyframes blink {
+            0%, 90%, 100% { transform: scaleY(1); }
+            95% { transform: scaleY(0.1); }
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 40;
+            display: flex;
+            gap: 15px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loading" class="loading-overlay">
+        <div class="baymax-loader">
+            <div class="eye"></div>
+            <div class="line"></div>
+            <div class="eye"></div>
+        </div>
+        <p class="mt-4 text-gray-300 font-light">Initializing Healthcare Companion...</p>
+    </div>
+
+    <!-- Main AR View -->
+    <div id="canvas-container">
+        <video id="input-video" playsinline></video>
+        <canvas id="output-canvas"></canvas>
+        
+        <div class="controls">
+            <button onclick="toggleFilter()" class="bg-white text-black px-6 py-2 rounded-full font-bold shadow-lg hover:bg-gray-200 transition active:scale-95 flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
+                    <path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8zm8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
+                </svg>
+                Toggle Mask
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input-video');
+        const canvasElement = document.getElementById('output-canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const loadingScreen = document.getElementById('loading');
+        
+        let isFilterActive = true;
+        let isModelLoaded = false;
+
+        // Resize canvas to match window
+        function resizeCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function toggleFilter() {
+            isFilterActive = !isFilterActive;
+        }
+
+        function onResults(results) {
+            // Hide loader once we get first results
+            if (!isModelLoaded) {
+                isModelLoaded = true;
+                loadingScreen.style.opacity = '0';
+                setTimeout(() => loadingScreen.style.display = 'none', 500);
+            }
+
+            // 1. Prepare Canvas
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Draw the video feed first
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiFaceLandmarks && isFilterActive) {
+                for (const landmarks of results.multiFaceLandmarks) {
+                    drawBaymaxMask(landmarks);
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        // --- Core Baymax Drawing Logic ---
+        function drawBaymaxMask(landmarks) {
+            // Helper to get coordinates scaled to canvas
+            const getPt = (index) => ({
+                x: landmarks[index].x * canvasElement.width,
+                y: landmarks[index].y * canvasElement.height
+            });
+
+            // --- 1. Draw the White "Balloon" Head (Face Oval) ---
+            // MediaPipe Face Oval indices
+            const faceOvalIndices = [
+                10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+                397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+                172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
+            ];
+
+            canvasCtx.beginPath();
+            const startPt = getPt(faceOvalIndices[0]);
+            canvasCtx.moveTo(startPt.x, startPt.y);
+
+            for (let i = 1; i < faceOvalIndices.length; i++) {
+                const pt = getPt(faceOvalIndices[i]);
+                canvasCtx.lineTo(pt.x, pt.y);
+            }
+            canvasCtx.closePath();
+
+            // Create a gradient to simulate 3D shiny plastic look
+            // We use the nose tip (index 1) as the center of the highlight
+            const noseTip = getPt(1);
+            const chin = getPt(152);
+            const forehead = getPt(10);
+            // Calculate approximate face height for gradient radius
+            const faceHeight = Math.sqrt(Math.pow(chin.x - forehead.x, 2) + Math.pow(chin.y - forehead.y, 2));
+
+            const gradient = canvasCtx.createRadialGradient(
+                noseTip.x, noseTip.y - faceHeight * 0.1, faceHeight * 0.1, // Highlight source
+                noseTip.x, noseTip.y, faceHeight * 0.8 // Shadow edge
+            );
+            gradient.addColorStop(0, '#FFFFFF'); // Pure white highlight
+            gradient.addColorStop(0.4, '#FDFDFD'); // Main white
+            gradient.addColorStop(1, '#D0D0D0'); // Shadowed edges
+
+            canvasCtx.fillStyle = gradient;
+            canvasCtx.fill();
+            
+            // Soft outline
+            canvasCtx.strokeStyle = "rgba(200, 200, 200, 0.5)";
+            canvasCtx.lineWidth = 2;
+            canvasCtx.stroke();
+
+            // --- 2. Calculate Eye Positions ---
+            // Baymax's eyes are simple geometric shapes. 
+            // We find the center of the human eye to place Baymax's eyes.
+            
+            const leftEyeIndices = [33, 133]; // Corners of left eye
+            const rightEyeIndices = [362, 263]; // Corners of right eye
+
+            const getCenter = (idx1, idx2) => {
+                const p1 = getPt(idx1);
+                const p2 = getPt(idx2);
+                return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+            };
+
+            const leftEyeCenter = getCenter(33, 133);
+            const rightEyeCenter = getCenter(362, 263);
+
+            // Calculate eye size based on face scale
+            // Distance between eyes helps determine scale
+            const eyeDist = Math.sqrt(
+                Math.pow(rightEyeCenter.x - leftEyeCenter.x, 2) + 
+                Math.pow(rightEyeCenter.y - leftEyeCenter.y, 2)
+            );
+            
+            const baymaxEyeRadius = eyeDist * 0.18; // Baymax has small eyes relative to head
+            const bridgeThickness = baymaxEyeRadius * 0.6; 
+
+            // --- 3. Draw The "•—•" ---
+            
+            canvasCtx.fillStyle = "#111111";
+            canvasCtx.strokeStyle = "#111111";
+
+            // Draw Connecting Line
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(leftEyeCenter.x, leftEyeCenter.y);
+            canvasCtx.lineTo(rightEyeCenter.x, rightEyeCenter.y);
+            canvasCtx.lineWidth = bridgeThickness;
+            canvasCtx.lineCap = 'round'; // Rounds the ends of the line slightly
+            canvasCtx.stroke();
+
+            // Draw Left Eye Dot
+            canvasCtx.beginPath();
+            canvasCtx.arc(leftEyeCenter.x, leftEyeCenter.y, baymaxEyeRadius, 0, 2 * Math.PI);
+            canvasCtx.fill();
+
+            // Draw Right Eye Dot
+            canvasCtx.beginPath();
+            canvasCtx.arc(rightEyeCenter.x, rightEyeCenter.y, baymaxEyeRadius, 0, 2 * Math.PI);
+            canvasCtx.fill();
+        }
+
+        // --- Initialization ---
+        const faceMesh = new FaceMesh({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+        }});
+
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true, // Better accuracy for eyes/lips
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults(onResults);
+
+        // Use Camera Utils to start camera
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceMesh.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+
+        // Start everything
+        camera.start().catch(err => {
+            console.error(err);
+            alert("Camera access denied or not available. Please allow camera permissions.");
+        });
+
+    </script>
+</body>
+</html>

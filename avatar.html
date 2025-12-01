@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Baymax AR Filter</title>
+    <!-- Tailwind CSS for UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MediaPipe Face Mesh -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden; /* Prevent scrolling */
+        }
+        
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+
+        canvas {
+            max-width: 100%;
+            max-height: 100%;
+            transform: scaleX(-1); /* Mirror effect */
+        }
+
+        /* Hidden video element required for MediaPipe */
+        #input-video {
+            display: none;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 50;
+            transition: opacity 0.5s;
+        }
+
+        .baymax-loader {
+            width: 100px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: relative;
+        }
+
+        .eye {
+            width: 15px;
+            height: 15px;
+            background: white;
+            border-radius: 50%;
+            animation: blink 3s infinite;
+        }
+
+        .line {
+            height: 4px;
+            flex-grow: 1;
+            background: white;
+            margin: 0 5px;
+        }
+
+        @keyframes blink {
+            0%, 90%, 100% { transform: scaleY(1); }
+            95% { transform: scaleY(0.1); }
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 40;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .hint-text {
+            background: rgba(0,0,0,0.5);
+            padding: 5px 12px;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            color: #ddd;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loading" class="loading-overlay">
+        <div class="baymax-loader">
+            <div class="eye"></div>
+            <div class="line"></div>
+            <div class="eye"></div>
+        </div>
+        <p class="mt-4 text-gray-300 font-light">Initializing Big Hero 6 Protocols...</p>
+    </div>
+
+    <!-- Main AR View -->
+    <div id="canvas-container">
+        <video id="input-video" playsinline></video>
+        <canvas id="output-canvas"></canvas>
+        
+        <div class="controls">
+            <div class="hint-text">Bring friends for Team Modes!</div>
+            <button onclick="toggleFilter()" class="bg-white text-black px-6 py-2 rounded-full font-bold shadow-lg hover:bg-gray-200 transition active:scale-95 flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
+                    <path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8zm8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
+                </svg>
+                Toggle Masks
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input-video');
+        const canvasElement = document.getElementById('output-canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const loadingScreen = document.getElementById('loading');
+        
+        let isFilterActive = true;
+        let isModelLoaded = false;
+
+        // Resize canvas to match window
+        function resizeCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function toggleFilter() {
+            isFilterActive = !isFilterActive;
+        }
+
+        function onResults(results) {
+            // Hide loader once we get first results
+            if (!isModelLoaded) {
+                isModelLoaded = true;
+                loadingScreen.style.opacity = '0';
+                setTimeout(() => loadingScreen.style.display = 'none', 500);
+            }
+
+            // 1. Prepare Canvas
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Draw the video feed first
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiFaceLandmarks && isFilterActive) {
+                // Iterate through all detected faces
+                results.multiFaceLandmarks.forEach((landmarks, index) => {
+                    drawHeroMask(landmarks, index);
+                });
+            }
+            canvasCtx.restore();
+        }
+
+        // Define Themes for different people
+        const HERO_THEMES = [
+            // 0: Classic Baymax (White/Healthcare)
+            { 
+                mainColor: '#FFFFFF', 
+                highlight: '#FFFFFF', 
+                shadow: '#D0D0D0', 
+                eyeColor: '#111111', 
+                style: 'classic' 
+            },
+            // 1: Armor Mode (Red/Purple)
+            { 
+                mainColor: '#D32F2F', 
+                highlight: '#E57373', 
+                shadow: '#B71C1C', 
+                eyeColor: '#311B92', // Dark Purple visor 
+                style: 'visor' 
+            },
+            // 2: Speed Mode (Yellow/GoGo)
+            { 
+                mainColor: '#FFEB3B', 
+                highlight: '#FFF59D', 
+                shadow: '#FBC02D', 
+                eyeColor: '#212121', 
+                style: 'visor' 
+            },
+            // 3: Plasma Mode (Green/Wasabi)
+            { 
+                mainColor: '#00E676', 
+                highlight: '#69F0AE', 
+                shadow: '#00C853', 
+                eyeColor: '#004D40', 
+                style: 'visor' 
+            }
+        ];
+
+        // --- Core Drawing Logic ---
+        function drawHeroMask(landmarks, index) {
+            // Cycle through themes if more than 4 people
+            const theme = HERO_THEMES[index % HERO_THEMES.length];
+
+            // Helper to get coordinates scaled to canvas
+            const getPt = (idx) => ({
+                x: landmarks[idx].x * canvasElement.width,
+                y: landmarks[idx].y * canvasElement.height
+            });
+
+            // --- 1. Draw the Head (Face Oval) ---
+            const faceOvalIndices = [
+                10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+                397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+                172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
+            ];
+
+            canvasCtx.beginPath();
+            const startPt = getPt(faceOvalIndices[0]);
+            canvasCtx.moveTo(startPt.x, startPt.y);
+
+            for (let i = 1; i < faceOvalIndices.length; i++) {
+                const pt = getPt(faceOvalIndices[i]);
+                canvasCtx.lineTo(pt.x, pt.y);
+            }
+            canvasCtx.closePath();
+
+            // Gradient Logic
+            const noseTip = getPt(1);
+            const chin = getPt(152);
+            const forehead = getPt(10);
+            const faceHeight = Math.sqrt(Math.pow(chin.x - forehead.x, 2) + Math.pow(chin.y - forehead.y, 2));
+
+            const gradient = canvasCtx.createRadialGradient(
+                noseTip.x, noseTip.y - faceHeight * 0.1, faceHeight * 0.1,
+                noseTip.x, noseTip.y, faceHeight * 0.8
+            );
+            gradient.addColorStop(0, theme.highlight); 
+            gradient.addColorStop(0.4, theme.mainColor); 
+            gradient.addColorStop(1, theme.shadow); 
+
+            canvasCtx.fillStyle = gradient;
+            canvasCtx.fill();
+            
+            // Soft outline
+            canvasCtx.strokeStyle = "rgba(0, 0, 0, 0.2)";
+            canvasCtx.lineWidth = 2;
+            canvasCtx.stroke();
+
+            // --- 2. Calculate Eye Positions ---
+            const leftEyeCenter = {
+                x: (getPt(33).x + getPt(133).x) / 2,
+                y: (getPt(33).y + getPt(133).y) / 2
+            };
+            const rightEyeCenter = {
+                x: (getPt(362).x + getPt(263).x) / 2,
+                y: (getPt(362).y + getPt(263).y) / 2
+            };
+
+            const eyeDist = Math.sqrt(
+                Math.pow(rightEyeCenter.x - leftEyeCenter.x, 2) + 
+                Math.pow(rightEyeCenter.y - leftEyeCenter.y, 2)
+            );
+            
+            // --- 3. Render Based on Style (Classic vs Visor) ---
+            
+            if (theme.style === 'classic') {
+                // Classic Baymax Eyes (•—•)
+                const baymaxEyeRadius = eyeDist * 0.18; 
+                const bridgeThickness = baymaxEyeRadius * 0.6; 
+
+                canvasCtx.fillStyle = theme.eyeColor;
+                canvasCtx.strokeStyle = theme.eyeColor;
+
+                // Connector
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(leftEyeCenter.x, leftEyeCenter.y);
+                canvasCtx.lineTo(rightEyeCenter.x, rightEyeCenter.y);
+                canvasCtx.lineWidth = bridgeThickness;
+                canvasCtx.lineCap = 'round';
+                canvasCtx.stroke();
+
+                // Eyes
+                canvasCtx.beginPath();
+                canvasCtx.arc(leftEyeCenter.x, leftEyeCenter.y, baymaxEyeRadius, 0, 2 * Math.PI);
+                canvasCtx.arc(rightEyeCenter.x, rightEyeCenter.y, baymaxEyeRadius, 0, 2 * Math.PI);
+                canvasCtx.fill();
+
+            } else if (theme.style === 'visor') {
+                // Hero Visor (Rounded Rectangle across eyes)
+                const visorWidth = eyeDist * 2.5;
+                const visorHeight = eyeDist * 0.8;
+                const midX = (leftEyeCenter.x + rightEyeCenter.x) / 2;
+                const midY = (leftEyeCenter.y + rightEyeCenter.y) / 2;
+                
+                // Tilt calculation
+                const dx = rightEyeCenter.x - leftEyeCenter.x;
+                const dy = rightEyeCenter.y - leftEyeCenter.y;
+                const angle = Math.atan2(dy, dx);
+
+                canvasCtx.save();
+                canvasCtx.translate(midX, midY);
+                canvasCtx.rotate(angle);
+                
+                // Draw Visor Background
+                canvasCtx.fillStyle = theme.eyeColor;
+                canvasCtx.beginPath();
+                // Custom rounded rect manually for better control or just fillRect with border radius logic
+                canvasCtx.roundRect(-visorWidth/2, -visorHeight/2, visorWidth, visorHeight, visorHeight/2);
+                canvasCtx.fill();
+
+                // Add a "shine" to the visor
+                canvasCtx.fillStyle = "rgba(255, 255, 255, 0.4)";
+                canvasCtx.beginPath();
+                canvasCtx.ellipse(-visorWidth * 0.2, -visorHeight * 0.2, visorWidth * 0.1, visorHeight * 0.15, 0, 0, Math.PI * 2);
+                canvasCtx.fill();
+
+                canvasCtx.restore();
+            }
+        }
+
+        // --- Initialization ---
+        const faceMesh = new FaceMesh({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+        }});
+
+        faceMesh.setOptions({
+            maxNumFaces: 4, // Increased to 4 people
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults(onResults);
+
+        // Use Camera Utils to start camera
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceMesh.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+
+        // Start everything
+        camera.start().catch(err => {
+            console.error(err);
+            alert("Camera access denied or not available. Please allow camera permissions.");
+        });
+
+    </script>
+</body>
+</html>
