@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Baymax AR Filter</title>
+    <!-- Tailwind CSS for UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MediaPipe Face Mesh & Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            margin: 0;
+        }
+        
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror effect */
+        }
+
+        #input-video { display: none; }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 50;
+            transition: opacity 0.5s;
+        }
+
+        .baymax-loader {
+            width: 100px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: relative;
+        }
+
+        .eye {
+            width: 15px;
+            height: 15px;
+            background: white;
+            border-radius: 50%;
+            animation: blink 3s infinite;
+        }
+
+        .line {
+            height: 4px;
+            flex-grow: 1;
+            background: white;
+            margin: 0 5px;
+        }
+
+        @keyframes blink {
+            0%, 90%, 100% { transform: scaleY(1); }
+            95% { transform: scaleY(0.1); }
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 40;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+            pointer-events: none; /* Let clicks pass through to hidden buttons if needed */
+        }
+        
+        .hint-text {
+            background: rgba(0,0,0,0.6);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            color: #fff;
+            backdrop-filter: blur(4px);
+            border: 1px solid rgba(255,255,255,0.1);
+            text-align: center;
+        }
+
+        .btn {
+            pointer-events: auto;
+            background: white;
+            color: black;
+            padding: 10px 24px;
+            border-radius: 99px;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn:active { transform: scale(0.95); }
+
+        /* Screenshot Flash Animation */
+        @keyframes flash {
+            0% { opacity: 0.8; background: white; }
+            100% { opacity: 0; background: transparent; }
+        }
+        .flash-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none;
+            z-index: 60;
+        }
+        .flash-active {
+            animation: flash 0.5s ease-out forwards;
+        }
+
+        /* Countdown */
+        #countdown {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 120px;
+            font-weight: 900;
+            color: white;
+            text-shadow: 0 0 20px rgba(0,0,0,0.5);
+            z-index: 55;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loading" class="loading-overlay">
+        <div class="baymax-loader">
+            <div class="eye"></div>
+            <div class="line"></div>
+            <div class="eye"></div>
+        </div>
+        <p class="mt-4 text-gray-300 font-light text-center">Loading Face & Hand Tracking...</p>
+    </div>
+
+    <!-- Flash Effect -->
+    <div id="flash-overlay" class="flash-overlay"></div>
+    
+    <!-- Countdown Display -->
+    <div id="countdown">3</div>
+
+    <!-- Main View -->
+    <div id="canvas-container">
+        <video id="input-video" playsinline></video>
+        <canvas id="output-canvas"></canvas>
+        
+        <div class="controls">
+            <div id="status-msg" class="hint-text"> Show a ✊ (Fist) to take a screenshot!</div>
+            <button onclick="toggleFilter()" class="btn">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
+                    <path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8zm8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
+                </svg>
+                Toggle Masks
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input-video');
+        const canvasElement = document.getElementById('output-canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const loadingScreen = document.getElementById('loading');
+        const flashOverlay = document.getElementById('flash-overlay');
+        const countdownEl = document.getElementById('countdown');
+        const statusMsg = document.getElementById('status-msg');
+        
+        let isFilterActive = true;
+        let isFaceLoaded = false;
+        let isHandLoaded = false;
+        
+        // Screenshot Logic State
+        let fistDetectedFrames = 0;
+        let isCountingDown = false;
+        const FIST_TRIGGER_FRAMES = 15; // Require fist held for ~0.5s to prevent accidental triggers
+
+        // Resize
+        function resizeCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function toggleFilter() { isFilterActive = !isFilterActive; }
+
+        function checkLoadStatus() {
+            if (isFaceLoaded && isHandLoaded) {
+                loadingScreen.style.opacity = '0';
+                setTimeout(() => loadingScreen.style.display = 'none', 500);
+            }
+        }
+
+        // --- Custom Rounded Rect Function (Fixes Missing Eye Issue) ---
+        // Browsers like some mobile WebViews don't support ctx.roundRect() yet.
+        function drawRoundedRect(ctx, x, y, width, height, radius) {
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + width - radius, y);
+            ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+            ctx.lineTo(x + width, y + height - radius);
+            ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+            ctx.lineTo(x + radius, y + height);
+            ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
+            ctx.closePath();
+        }
+
+        // --- Screenshot Function ---
+        function takeScreenshot() {
+            // Flash effect
+            flashOverlay.classList.remove('flash-active');
+            void flashOverlay.offsetWidth; // Trigger reflow
+            flashOverlay.classList.add('flash-active');
+
+            // Save
+            const dataURL = canvasElement.toDataURL('image/png');
+            const link = document.createElement('a');
+            link.download = `baymax-moment-${Date.now()}.png`;
+            link.href = dataURL;
+            link.click();
+            
+            // Reset
+            isCountingDown = false;
+            fistDetectedFrames = 0;
+            statusMsg.innerText = "Screenshot saved! Show ✊ to take another.";
+            countdownEl.style.display = 'none';
+        }
+
+        function startCountdown() {
+            if(isCountingDown) return;
+            isCountingDown = true;
+            let count = 3;
+            
+            countdownEl.style.display = 'block';
+            countdownEl.innerText = count;
+            statusMsg.innerText = "Hold steady!";
+
+            const timer = setInterval(() => {
+                count--;
+                if (count > 0) {
+                    countdownEl.innerText = count;
+                } else {
+                    clearInterval(timer);
+                    countdownEl.innerText = "";
+                    takeScreenshot();
+                }
+            }, 1000);
+        }
+
+        // --- Drawing Logic ---
+        
+        const HERO_THEMES = [
+            { mainColor: '#FFFFFF', highlight: '#FFFFFF', shadow: '#D0D0D0', eyeColor: '#111111', style: 'classic' },
+            { mainColor: '#D32F2F', highlight: '#E57373', shadow: '#B71C1C', eyeColor: '#311B92', style: 'visor' },
+            { mainColor: '#FFEB3B', highlight: '#FFF59D', shadow: '#FBC02D', eyeColor: '#212121', style: 'visor' },
+            { mainColor: '#00E676', highlight: '#69F0AE', shadow: '#00C853', eyeColor: '#004D40', style: 'visor' }
+        ];
+
+        function drawHeroMask(landmarks, index) {
+            const theme = HERO_THEMES[index % HERO_THEMES.length];
+            const getPt = (idx) => ({ x: landmarks[idx].x * canvasElement.width, y: landmarks[idx].y * canvasElement.height });
+
+            // Face Oval
+            const faceOvalIndices = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+            
+            canvasCtx.beginPath();
+            const startPt = getPt(faceOvalIndices[0]);
+            canvasCtx.moveTo(startPt.x, startPt.y);
+            for (let i = 1; i < faceOvalIndices.length; i++) canvasCtx.lineTo(getPt(faceOvalIndices[i]).x, getPt(faceOvalIndices[i]).y);
+            canvasCtx.closePath();
+
+            const noseTip = getPt(1);
+            const chin = getPt(152);
+            const forehead = getPt(10);
+            const faceHeight = Math.sqrt(Math.pow(chin.x - forehead.x, 2) + Math.pow(chin.y - forehead.y, 2));
+
+            const gradient = canvasCtx.createRadialGradient(noseTip.x, noseTip.y - faceHeight * 0.1, faceHeight * 0.1, noseTip.x, noseTip.y, faceHeight * 0.8);
+            gradient.addColorStop(0, theme.highlight);
+            gradient.addColorStop(0.4, theme.mainColor);
+            gradient.addColorStop(1, theme.shadow);
+            canvasCtx.fillStyle = gradient;
+            canvasCtx.fill();
+            canvasCtx.strokeStyle = "rgba(0,0,0,0.1)";
+            canvasCtx.stroke();
+
+            // Eye Logic
+            const leftEyeCenter = { x: (getPt(33).x + getPt(133).x) / 2, y: (getPt(33).y + getPt(133).y) / 2 };
+            const rightEyeCenter = { x: (getPt(362).x + getPt(263).x) / 2, y: (getPt(362).y + getPt(263).y) / 2 };
+            const eyeDist = Math.sqrt(Math.pow(rightEyeCenter.x - leftEyeCenter.x, 2) + Math.pow(rightEyeCenter.y - leftEyeCenter.y, 2));
+
+            if (theme.style === 'classic') {
+                const r = eyeDist * 0.18;
+                canvasCtx.fillStyle = theme.eyeColor;
+                canvasCtx.strokeStyle = theme.eyeColor;
+                
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(leftEyeCenter.x, leftEyeCenter.y);
+                canvasCtx.lineTo(rightEyeCenter.x, rightEyeCenter.y);
+                canvasCtx.lineWidth = r * 0.6;
+                canvasCtx.lineCap = 'round';
+                canvasCtx.stroke();
+
+                canvasCtx.beginPath();
+                canvasCtx.arc(leftEyeCenter.x, leftEyeCenter.y, r, 0, 2*Math.PI);
+                canvasCtx.arc(rightEyeCenter.x, rightEyeCenter.y, r, 0, 2*Math.PI);
+                canvasCtx.fill();
+            } else {
+                // Visor Style (Corrected)
+                const w = eyeDist * 2.5;
+                const h = eyeDist * 0.8;
+                const midX = (leftEyeCenter.x + rightEyeCenter.x) / 2;
+                const midY = (leftEyeCenter.y + rightEyeCenter.y) / 2;
+                const angle = Math.atan2(rightEyeCenter.y - leftEyeCenter.y, rightEyeCenter.x - leftEyeCenter.x);
+
+                canvasCtx.save();
+                canvasCtx.translate(midX, midY);
+                canvasCtx.rotate(angle);
+                
+                canvasCtx.fillStyle = theme.eyeColor;
+                // Use custom function instead of roundRect
+                drawRoundedRect(canvasCtx, -w/2, -h/2, w, h, h/2);
+                canvasCtx.fill();
+
+                // Shine
+                canvasCtx.fillStyle = "rgba(255,255,255,0.4)";
+                canvasCtx.beginPath();
+                canvasCtx.ellipse(-w*0.2, -h*0.2, w*0.1, h*0.15, 0, 0, Math.PI*2);
+                canvasCtx.fill();
+                
+                canvasCtx.restore();
+            }
+        }
+
+        // --- Hand Logic ---
+        function checkHandGesture(handLandmarks) {
+            // Detect Fist: All finger tips are below their PIP joints (when hand is upright)
+            // Or simpler distance check: Tip to Wrist < PIP to Wrist
+            
+            if (isCountingDown) return;
+
+            const wrist = handLandmarks[0];
+            const fingers = [
+                {tip: 8, base: 5},  // Index
+                {tip: 12, base: 9}, // Middle
+                {tip: 16, base: 13},// Ring
+                {tip: 20, base: 17} // Pinky
+            ];
+
+            let fingersClosed = 0;
+            fingers.forEach(f => {
+                const tipY = handLandmarks[f.tip].y;
+                const baseY = handLandmarks[f.base].y;
+                const wristY = wrist.y;
+                
+                // Simple check: Is tip closer to wrist than the base knuckle is?
+                // Using Euclidean distance is more robust to rotation
+                const dTip = Math.hypot(handLandmarks[f.tip].x - wrist.x, handLandmarks[f.tip].y - wrist.y);
+                const dBase = Math.hypot(handLandmarks[f.base].x - wrist.x, handLandmarks[f.base].y - wrist.y);
+                
+                if (dTip < dBase) fingersClosed++;
+            });
+
+            // Thumb is tricky, but 4 fingers closed is usually enough for a fist
+            if (fingersClosed >= 3) {
+                fistDetectedFrames++;
+                if (fistDetectedFrames > FIST_TRIGGER_FRAMES) {
+                    startCountdown();
+                } else {
+                    statusMsg.innerText = `Fist detected... Hold for ${((FIST_TRIGGER_FRAMES - fistDetectedFrames)/30).toFixed(1)}s`;
+                }
+            } else {
+                fistDetectedFrames = 0;
+                if (!isCountingDown) statusMsg.innerText = "Show a ✊ (Fist) to take a screenshot!";
+            }
+        }
+
+        // --- Initialization ---
+        
+        // 1. Face Mesh
+        const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+        faceMesh.setOptions({ maxNumFaces: 4, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        faceMesh.onResults((results) => {
+            isFaceLoaded = true;
+            checkLoadStatus();
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            
+            if (results.multiFaceLandmarks && isFilterActive) {
+                results.multiFaceLandmarks.forEach((lm, i) => drawHeroMask(lm, i));
+            }
+            // Note: Canvas restore is deferred to after hands to allow layering if needed, 
+            // but for now we restore here to keep contexts clean
+            // Actually, we need to NOT clear canvas in hands, so we share the draw cycle?
+            // Easier approach: Use a shared variable or let FaceMesh draw the BG and Face, then Hands just does logic.
+        });
+
+        // 2. Hands
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        hands.onResults((results) => {
+            isHandLoaded = true;
+            checkLoadStatus();
+            
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    checkHandGesture(landmarks);
+                    // Optional: Draw hand skeleton
+                    // drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 1});
+                }
+            }
+            canvasCtx.restore(); // Restore the save from FaceMesh or earlier
+        });
+
+        // 3. Camera (Feeds both)
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                // We send to FaceMesh first. It draws the video background and faces.
+                await faceMesh.send({image: videoElement}); 
+                // Then we send to Hands. It analyzes gestures on the same frame.
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+
+        camera.start().catch(e => {
+            console.error(e);
+            alert("Camera error. Please ensure permissions are granted.");
+        });
+
+    </script>
+</body>
+</html>
