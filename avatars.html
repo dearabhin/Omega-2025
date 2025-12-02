@@ -3,12 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Baymax AR Filter</title>
-    <!-- Tailwind CSS for UI -->
+    <title>Baymax Full Body AR</title>
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- MediaPipe Face Mesh & Hands -->
+    
+    <!-- MediaPipe Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     
@@ -124,7 +126,7 @@
         }
         .btn:active { transform: scale(0.95); }
 
-        /* Screenshot Flash Animation */
+        /* Flash */
         @keyframes flash {
             0% { opacity: 0.8; background: white; }
             100% { opacity: 0; background: transparent; }
@@ -135,11 +137,8 @@
             pointer-events: none;
             z-index: 60;
         }
-        .flash-active {
-            animation: flash 0.5s ease-out forwards;
-        }
+        .flash-active { animation: flash 0.5s ease-out forwards; }
 
-        /* Countdown */
         #countdown {
             position: absolute;
             top: 50%;
@@ -156,35 +155,30 @@
 </head>
 <body>
 
-    <!-- Loading Screen -->
     <div id="loading" class="loading-overlay">
         <div class="baymax-loader">
             <div class="eye"></div>
             <div class="line"></div>
             <div class="eye"></div>
         </div>
-        <p class="mt-4 text-gray-300 font-light text-center">Loading Face & Hand Tracking...</p>
+        <p class="mt-4 text-gray-300 font-light text-center">Initializing Body Armor & Face Systems...</p>
     </div>
 
-    <!-- Flash Effect -->
     <div id="flash-overlay" class="flash-overlay"></div>
-    
-    <!-- Countdown Display -->
     <div id="countdown">3</div>
 
-    <!-- Main View -->
     <div id="canvas-container">
         <video id="input-video" playsinline></video>
         <canvas id="output-canvas"></canvas>
         
         <div class="controls">
-            <div id="status-msg" class="hint-text"> Show a ✊ (Fist) to take a screenshot!</div>
+            <div id="status-msg" class="hint-text">Show a ✊ (Fist) to take a screenshot!</div>
             <button onclick="toggleFilter()" class="btn">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
                     <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/>
                     <path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8zm8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
                 </svg>
-                Toggle Masks
+                Toggle Armor
             </button>
         </div>
     </div>
@@ -198,16 +192,23 @@
         const countdownEl = document.getElementById('countdown');
         const statusMsg = document.getElementById('status-msg');
         
+        // --- State Management ---
         let isFilterActive = true;
         let isFaceLoaded = false;
         let isHandLoaded = false;
+        let isPoseLoaded = false;
         
-        // Screenshot Logic State
-        // let fistDetectedFrames = 0;
-        // let isCountingDown = false;
-        // const FIST_TRIGGER_FRAMES = 15;
+        // Latest Data Storage (for synchronized rendering)
+        let latestFaces = null;
+        let latestHands = null;
+        let latestPose = null;
+        
+        // Screenshot Logic
+        let fistDetectedFrames = 0;
+        let isCountingDown = false;
+        const FIST_TRIGGER_FRAMES = 15;
 
-        // Resize
+        // --- Setup ---
         function resizeCanvas() {
             canvasElement.width = window.innerWidth;
             canvasElement.height = window.innerHeight;
@@ -218,13 +219,41 @@
         function toggleFilter() { isFilterActive = !isFilterActive; }
 
         function checkLoadStatus() {
-            if (isFaceLoaded && isHandLoaded) {
+            if (isFaceLoaded && isHandLoaded && isPoseLoaded) {
                 loadingScreen.style.opacity = '0';
                 setTimeout(() => loadingScreen.style.display = 'none', 500);
             }
         }
 
-        // Custom Rounded Rect
+        // --- Render Loop (Game Loop Pattern) ---
+        function renderLoop() {
+            // 1. Clear & Draw Video Background
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (isFilterActive) {
+                // 2. Draw Body Armor (Layer 1 - Behind Face)
+                if (latestPose && latestPose.poseLandmarks) {
+                    drawBaymaxBody(latestPose.poseLandmarks);
+                }
+
+                // 3. Draw Faces (Layer 2 - On Top)
+                if (latestFaces && latestFaces.multiFaceLandmarks) {
+                    latestFaces.multiFaceLandmarks.forEach((lm, i) => drawHeroMask(lm, i));
+                }
+
+                // 4. Logic: Hands (Gesture Only, no drawing)
+                if (latestHands && latestHands.multiHandLandmarks) {
+                    latestHands.multiHandLandmarks.forEach(lm => checkHandGesture(lm));
+                }
+            }
+            
+            canvasCtx.restore();
+            requestAnimationFrame(renderLoop);
+        }
+
+        // --- Drawing Helpers ---
         function drawRoundedRect(ctx, x, y, width, height, radius) {
             ctx.beginPath();
             ctx.moveTo(x + radius, y);
@@ -239,82 +268,115 @@
             ctx.closePath();
         }
 
-        // Screenshot
-        function takeScreenshot() {
-            flashOverlay.classList.remove('flash-active');
-            void flashOverlay.offsetWidth;
-            flashOverlay.classList.add('flash-active');
-
-            const dataURL = canvasElement.toDataURL('image/png');
-            const link = document.createElement('a');
-            link.download = `baymax-moment-${Date.now()}.png`;
-            link.href = dataURL;
-            link.click();
-            
-            isCountingDown = false;
-            fistDetectedFrames = 0;
-            statusMsg.innerText = "Screenshot saved! Show ✊ to take another.";
-            countdownEl.style.display = 'none';
-        }
-
-        function startCountdown() {
-            if(isCountingDown) return;
-            isCountingDown = true;
-            let count = 3;
-            countdownEl.style.display = 'block';
-            countdownEl.innerText = count;
-            statusMsg.innerText = "Hold steady!";
-
-            const timer = setInterval(() => {
-                count--;
-                if (count > 0) {
-                    countdownEl.innerText = count;
-                } else {
-                    clearInterval(timer);
-                    countdownEl.innerText = "";
-                    takeScreenshot();
-                }
-            }, 1000);
-        }
-
-        // --- Themes ---
         const HERO_THEMES = [
-            // Classic
-            { 
-                mainColor: '#FFFFFF', highlight: '#FFFFFF', shadow: '#D0D0D0', 
-                visorColor: null, // No visor
-                eyeColor: '#111111', style: 'classic' 
-            },
-            // Red (Armor)
-            { 
-                mainColor: '#D32F2F', highlight: '#E57373', shadow: '#B71C1C', 
-                visorColor: '#311B92', // Dark Purple visor
-                eyeColor: '#80DEEA', // Cyan LED eyes
-                style: 'visor' 
-            },
-            // Yellow (Speed)
-            { 
-                mainColor: '#FFEB3B', highlight: '#FFF59D', shadow: '#FBC02D', 
-                visorColor: '#212121', // Dark grey visor
-                eyeColor: '#FFFFFF', // White LED eyes
-                style: 'visor' 
-            },
-            // Green (Plasma)
-            { 
-                mainColor: '#00E676', highlight: '#69F0AE', shadow: '#00C853', 
-                visorColor: '#004D40', // Dark green visor
-                eyeColor: '#A7FFEB', // Mint LED eyes
-                style: 'visor' 
-            }
+            { mainColor: '#FFFFFF', highlight: '#FFFFFF', shadow: '#D0D0D0', visorColor: null, eyeColor: '#111111', style: 'classic' },
+            { mainColor: '#D32F2F', highlight: '#E57373', shadow: '#B71C1C', visorColor: '#311B92', eyeColor: '#80DEEA', style: 'visor' }, // Red
+            { mainColor: '#FFEB3B', highlight: '#FFF59D', shadow: '#FBC02D', visorColor: '#212121', eyeColor: '#FFFFFF', style: 'visor' }, // Yellow
+            { mainColor: '#00E676', highlight: '#69F0AE', shadow: '#00C853', visorColor: '#004D40', eyeColor: '#A7FFEB', style: 'visor' }  // Green
         ];
 
+        // --- Body Avatar Logic ---
+        function drawBaymaxBody(landmarks) {
+            const getPt = (idx) => ({ x: landmarks[idx].x * canvasElement.width, y: landmarks[idx].y * canvasElement.height });
+            
+            // Shoulders & Hips
+            const lShoulder = getPt(11);
+            const rShoulder = getPt(12);
+            const lHip = getPt(23);
+            const rHip = getPt(24);
+            const lElbow = getPt(13);
+            const rElbow = getPt(14);
+            const lWrist = getPt(15);
+            const rWrist = getPt(16);
+
+            // Calculate Scale (Shoulder Width)
+            const shoulderWidth = Math.hypot(rShoulder.x - lShoulder.x, rShoulder.y - lShoulder.y);
+            const armThick = shoulderWidth * 0.45; // Baymax arms are thick!
+
+            // Use the Theme of the "First" user (index 0) since Pose is usually single user
+            // In a more complex app, we would match pose rect to face rect to determine ID
+            const theme = HERO_THEMES[0]; 
+
+            canvasCtx.lineCap = 'round';
+            canvasCtx.lineJoin = 'round';
+
+            if (theme.style === 'classic') {
+                // --- Classic Inflatable Body ---
+                
+                // 1. Torso (Big Balloon)
+                canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                canvasCtx.beginPath();
+                // Draw a blob connecting shoulders and hips
+                const chestY = (lShoulder.y + rShoulder.y) / 2;
+                const hipY = (lHip.y + rHip.y) / 2;
+                const midX = (lShoulder.x + rShoulder.x) / 2;
+                
+                // Ellipse for torso
+                canvasCtx.ellipse(midX, (chestY + hipY)/2, shoulderWidth * 1.2, (hipY - chestY) * 0.8, 0, 0, Math.PI*2);
+                canvasCtx.fill();
+
+                // 2. Arms (Sausage links)
+                canvasCtx.strokeStyle = 'white';
+                canvasCtx.lineWidth = armThick;
+                
+                // Left Arm
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(lShoulder.x, lShoulder.y);
+                canvasCtx.quadraticCurveTo(lElbow.x, lElbow.y, lWrist.x, lWrist.y);
+                canvasCtx.stroke();
+
+                // Right Arm
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(rShoulder.x, rShoulder.y);
+                canvasCtx.quadraticCurveTo(rElbow.x, rElbow.y, rWrist.x, rWrist.y);
+                canvasCtx.stroke();
+                
+            } else {
+                // --- Hero Armor Body (Generic for colored heroes) ---
+                canvasCtx.fillStyle = theme.mainColor;
+                canvasCtx.strokeStyle = theme.shadow;
+                
+                // 1. Shoulder Pads
+                const padSize = shoulderWidth * 0.4;
+                canvasCtx.beginPath();
+                canvasCtx.arc(lShoulder.x, lShoulder.y, padSize, 0, Math.PI*2);
+                canvasCtx.arc(rShoulder.x, rShoulder.y, padSize, 0, Math.PI*2);
+                canvasCtx.fill();
+                canvasCtx.stroke();
+
+                // 2. Chest Plate
+                const chestCenter = { x: (lShoulder.x + rShoulder.x)/2, y: (lShoulder.y + rShoulder.y)/2 + shoulderWidth*0.3 };
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(chestCenter.x - padSize, chestCenter.y - padSize*0.5);
+                canvasCtx.lineTo(chestCenter.x + padSize, chestCenter.y - padSize*0.5);
+                canvasCtx.lineTo(chestCenter.x, chestCenter.y + padSize);
+                canvasCtx.closePath();
+                canvasCtx.fillStyle = theme.shadow;
+                canvasCtx.fill();
+                
+                // 3. Arm Armor
+                canvasCtx.lineWidth = armThick * 0.8;
+                canvasCtx.strokeStyle = theme.mainColor;
+                
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(lShoulder.x, lShoulder.y);
+                canvasCtx.lineTo(lElbow.x, lElbow.y);
+                canvasCtx.stroke();
+
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(rShoulder.x, rShoulder.y);
+                canvasCtx.lineTo(rElbow.x, rElbow.y);
+                canvasCtx.stroke();
+            }
+        }
+
+        // --- Face Mask Logic ---
         function drawHeroMask(landmarks, index) {
             const theme = HERO_THEMES[index % HERO_THEMES.length];
             const getPt = (idx) => ({ x: landmarks[idx].x * canvasElement.width, y: landmarks[idx].y * canvasElement.height });
 
-            // 1. Face Shape (Mask)
+            // Mask
             const faceOvalIndices = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
-            
             canvasCtx.beginPath();
             const startPt = getPt(faceOvalIndices[0]);
             canvasCtx.moveTo(startPt.x, startPt.y);
@@ -335,57 +397,46 @@
             canvasCtx.strokeStyle = "rgba(0,0,0,0.1)";
             canvasCtx.stroke();
 
-            // 2. Eye Calculations
+            // Eyes
             const leftEyeCenter = { x: (getPt(33).x + getPt(133).x) / 2, y: (getPt(33).y + getPt(133).y) / 2 };
             const rightEyeCenter = { x: (getPt(362).x + getPt(263).x) / 2, y: (getPt(362).y + getPt(263).y) / 2 };
             const eyeDist = Math.sqrt(Math.pow(rightEyeCenter.x - leftEyeCenter.x, 2) + Math.pow(rightEyeCenter.y - leftEyeCenter.y, 2));
             const angle = Math.atan2(rightEyeCenter.y - leftEyeCenter.y, rightEyeCenter.x - leftEyeCenter.x);
 
-            // 3. Draw Visor (if applicable)
             if (theme.style === 'visor') {
                 const w = eyeDist * 2.5;
                 const h = eyeDist * 0.9;
                 const midX = (leftEyeCenter.x + rightEyeCenter.x) / 2;
                 const midY = (leftEyeCenter.y + rightEyeCenter.y) / 2;
-
                 canvasCtx.save();
                 canvasCtx.translate(midX, midY);
                 canvasCtx.rotate(angle);
-                
-                // Draw Visor Background
                 canvasCtx.fillStyle = theme.visorColor;
                 drawRoundedRect(canvasCtx, -w/2, -h/2, w, h, h/2);
                 canvasCtx.fill();
-
-                // Glossy Reflection (Wide bar across top) - NO LONGER A DOT
                 canvasCtx.fillStyle = "rgba(255,255,255,0.2)";
                 canvasCtx.beginPath();
                 canvasCtx.ellipse(0, -h*0.25, w*0.35, h*0.15, 0, 0, Math.PI*2);
                 canvasCtx.fill();
-                
                 canvasCtx.restore();
             }
 
-            // 4. Draw Eyes (Common Logic for both styles now)
-            // Even Visors get eyes now, but in LED color
             const r = eyeDist * 0.18;
             canvasCtx.fillStyle = theme.eyeColor;
             canvasCtx.strokeStyle = theme.eyeColor;
-            
             canvasCtx.beginPath();
             canvasCtx.moveTo(leftEyeCenter.x, leftEyeCenter.y);
             canvasCtx.lineTo(rightEyeCenter.x, rightEyeCenter.y);
             canvasCtx.lineWidth = r * 0.6;
             canvasCtx.lineCap = 'round';
             canvasCtx.stroke();
-
             canvasCtx.beginPath();
             canvasCtx.arc(leftEyeCenter.x, leftEyeCenter.y, r, 0, 2*Math.PI);
             canvasCtx.arc(rightEyeCenter.x, rightEyeCenter.y, r, 0, 2*Math.PI);
             canvasCtx.fill();
         }
 
-        // --- Gesture Logic ---
+        // --- Hand Logic ---
         function checkHandGesture(handLandmarks) {
             if (isCountingDown) return;
             const wrist = handLandmarks[0];
@@ -407,40 +458,87 @@
             }
         }
 
-        // --- Init ---
+        function startCountdown() {
+            if(isCountingDown) return;
+            isCountingDown = true;
+            let count = 3;
+            countdownEl.style.display = 'block';
+            countdownEl.innerText = count;
+            statusMsg.innerText = "Hold steady!";
+
+            const timer = setInterval(() => {
+                count--;
+                if (count > 0) countdownEl.innerText = count;
+                else {
+                    clearInterval(timer);
+                    countdownEl.innerText = "";
+                    takeScreenshot();
+                }
+            }, 1000);
+        }
+
+        function takeScreenshot() {
+            flashOverlay.classList.remove('flash-active');
+            void flashOverlay.offsetWidth;
+            flashOverlay.classList.add('flash-active');
+            const dataURL = canvasElement.toDataURL('image/png');
+            const link = document.createElement('a');
+            link.download = `baymax-moment-${Date.now()}.png`;
+            link.href = dataURL;
+            link.click();
+            isCountingDown = false;
+            fistDetectedFrames = 0;
+            statusMsg.innerText = "Screenshot saved! Show ✊ to take another.";
+            countdownEl.style.display = 'none';
+        }
+
+        // --- Init Models ---
+        
+        // 1. FaceMesh
         const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
         faceMesh.setOptions({ maxNumFaces: 4, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-        faceMesh.onResults((results) => {
+        faceMesh.onResults((res) => {
             isFaceLoaded = true;
+            latestFaces = res; // Update State
             checkLoadStatus();
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-            if (results.multiFaceLandmarks && isFilterActive) {
-                results.multiFaceLandmarks.forEach((lm, i) => drawHeroMask(lm, i));
-            }
         });
 
+        // 2. Hands
         const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
         hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-        hands.onResults((results) => {
+        hands.onResults((res) => {
             isHandLoaded = true;
+            latestHands = res; // Update State
             checkLoadStatus();
-            if (results.multiHandLandmarks) {
-                for (const landmarks of results.multiHandLandmarks) checkHandGesture(landmarks);
-            }
-            canvasCtx.restore();
         });
 
+        // 3. Pose (New!)
+        const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+        pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        pose.onResults((res) => {
+            isPoseLoaded = true;
+            latestPose = res; // Update State
+            checkLoadStatus();
+        });
+
+        // 4. Camera (Feeds all 3)
         const camera = new Camera(videoElement, {
             onFrame: async () => {
+                // We send data to all 3 models.
+                // Note: Heavy operation for a browser!
                 await faceMesh.send({image: videoElement}); 
                 await hands.send({image: videoElement});
+                await pose.send({image: videoElement});
             },
             width: 1280,
             height: 720
         });
+
+        // Start Loop
+        requestAnimationFrame(renderLoop);
+        
         camera.start().catch(e => { console.error(e); alert("Camera error."); });
+
     </script>
 </body>
 </html>
